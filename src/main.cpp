@@ -45,18 +45,67 @@ namespace flir_vision_ros2 {
         system -> ReleaseInstance();
 
         RCLCPP_WARN(get_logger(), "Flir A320 not detected, checking again in 10 seconds");
-
         return;
       }
 
-      timer_->reset();
-
       int result = 0;
+      bool cam_with_mac = false;
+
+      std::string mac_address = "";
+      std::string mac_address_w_colons = "";
+      if (!has_parameter("mac_address")) declare_parameter("mac_address", mac_address);
+      get_parameter("mac_address", mac_address);
+      std::string hexString;
+      if (mac_address != "") {
+        mac_address_w_colons = mac_address;
+        mac_address.erase(std::remove(mac_address.begin(), mac_address.end(), ':'), mac_address.end());
+        std::stringstream ss;
+        ss << "0x" << std::hex << std::setw(12) << std::setfill('0') << std::stoull(mac_address, nullptr, 16);
+        hexString = ss.str();
+      }
 
       // Run example on each camera
       for (unsigned int i = 0; i < numCameras; i++) {
         pCam = camList.GetByIndex(i);
+        
+        if (mac_address != "") {
+          INodeMap & nodeMapTLDevice = pCam -> GetTLDeviceNodeMap();
+          try {
+            FeatureList_t features;
+            const CCategoryPtr category = nodeMapTLDevice.GetNode("DeviceInformation");
+            if (IsReadable(category)) {
+              category -> GetFeatures(features);
 
+              for (auto it = features.begin(); it != features.end(); ++it) {
+                const CNodePtr pfeatureNode = * it;
+                CValuePtr pValue = static_cast < CValuePtr > (pfeatureNode);
+                if (pfeatureNode -> GetName() == "GevDeviceMACAddress") {
+                  if (IsReadable(pValue)) {
+                    if (areEqualHexStrings(pValue -> ToString().c_str(), hexString)) {
+                      cam_with_mac = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            } else {
+              RCLCPP_WARN(get_logger(), "Device control information not available.");
+            }
+          } catch (Spinnaker::Exception & e) {
+            RCLCPP_ERROR(get_logger(), e.what());
+          }
+        } else cam_with_mac = true;
+
+        if (!cam_with_mac) {
+          pCam = nullptr;
+          camList.Clear();
+          system -> ReleaseInstance();
+
+          RCLCPP_WARN_STREAM(get_logger(), "Device with  mac address " << mac_address_w_colons << " not found. Checking in 10 seconds.");
+          return;
+        }
+
+        timer_->reset();
         result = result | RunSingleCamera(pCam);
       }
 
@@ -292,6 +341,13 @@ namespace flir_vision_ros2 {
 
     int DisableGVCPHeartbeat(CameraPtr pCam) {
       return ConfigureGVCPHeartbeat(pCam, false);
+    }
+
+    bool areEqualHexStrings(const std::string& s1, const std::string& s2) {
+        // Convert the strings to unsigned long long integers
+        unsigned long long n1 = std::stoull(s1, nullptr, 16);
+        unsigned long long n2 = std::stoull(s2, nullptr, 16);
+        return n1 == n2;
     }
 
     CameraPtr pCam = nullptr;
